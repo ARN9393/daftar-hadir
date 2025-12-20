@@ -1,211 +1,180 @@
-import React, { useState, useEffect } from 'react';
-import { PlusCircle, FileDown, Share2, Users, ArrowLeft, Trash2, LogOut, Lock, KeyRound, User, Link as LinkIcon, Check } from 'lucide-react';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  PlusCircle, FileDown, Share2, Users, ArrowLeft, Trash2, LogOut, 
+  Lock, KeyRound, User, Link as LinkIcon, Check, CheckCircle2, 
+  RotateCcw, AlertCircle, Info, Send, Copy, ClipboardCheck, ExternalLink
+} from 'lucide-react';
 import SignatureModal from './components/SignatureModal';
 import { TrainingInfo, Attendee, SignatureData } from './types';
 import { generateAttendancePDF } from './services/pdfService';
 
-// Robust ID generator
-const generateId = () => {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 9)}`;
-};
+const generateId = () => `${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 9)}`;
 
-// Helper functions for safe URL data encoding (URL-Safe Base64)
-const encodeData = (data: any) => {
+// Fungsi encode/decode untuk "Data Token" agar data bisa dikirim lewat link
+const encodeAttendee = (attendee: Attendee) => {
   try {
-    const json = JSON.stringify(data);
-    const uriEncoded = encodeURIComponent(json);
-    const base64 = btoa(uriEncoded);
-    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  } catch (e) {
-    console.error("Encoding error", e);
-    return "";
-  }
+    const data = {
+      n: attendee.name,
+      r: attendee.role,
+      s: attendee.signature,
+      t: attendee.type,
+      ts: attendee.timestamp
+    };
+    return btoa(encodeURIComponent(JSON.stringify(data))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  } catch (e) { return ""; }
 };
 
-const decodeData = (str: string) => {
+const decodeAttendee = (token: string): Partial<Attendee> | null => {
+  try {
+    let base64 = token.replace(/-/g, '+').replace(/_/g, '/');
+    while (base64.length % 4) base64 += '=';
+    const decoded = JSON.parse(decodeURIComponent(atob(base64)));
+    return {
+      id: generateId(),
+      name: decoded.n,
+      role: decoded.r,
+      signature: decoded.s,
+      type: decoded.t,
+      timestamp: decoded.ts
+    };
+  } catch (e) { return null; }
+};
+
+const encodeInfo = (info: TrainingInfo) => {
+  try {
+    const data = { a: info.activityName, i: info.instrumentName, t: info.date, l: info.location, pin: info.accessCode };
+    return btoa(encodeURIComponent(JSON.stringify(data))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  } catch (e) { return ""; }
+};
+
+const decodeInfo = (str: string): Partial<TrainingInfo> | null => {
   try {
     let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-    while (base64.length % 4) {
-      base64 += '=';
-    }
-    const uriEncoded = atob(base64);
-    return JSON.parse(decodeURIComponent(uriEncoded));
-  } catch (e) {
-    console.error("Decoding error", e);
-    return null;
-  }
+    while (base64.length % 4) base64 += '=';
+    const d = JSON.parse(decodeURIComponent(atob(base64)));
+    return { activityName: d.a, instrumentName: d.i, date: d.t, location: d.l, accessCode: d.pin };
+  } catch (e) { return null; }
 };
 
 function App() {
-  // Application State
   const [viewMode, setViewMode] = useState<'ADMIN' | 'KIOSK'>(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      return params.get('mode') === 'kiosk' ? 'KIOSK' : 'ADMIN';
-    }
-    return 'ADMIN';
+    const params = new URLSearchParams(window.location.search);
+    return params.get('mode') === 'kiosk' ? 'KIOSK' : 'ADMIN';
   });
 
-  // Admin Auth State
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return sessionStorage.getItem('admin_auth_token') === 'valid';
-    }
-    return false;
-  });
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(() => sessionStorage.getItem('admin_auth_token') === 'valid');
   const [adminLoginId, setAdminLoginId] = useState('');
   const [adminLoginPass, setAdminLoginPass] = useState('');
   const [adminAuthError, setAdminAuthError] = useState('');
 
-  // Kiosk Auth State
   const [isKioskAuthenticated, setIsKioskAuthenticated] = useState(false);
   const [kioskLoginPin, setKioskLoginPin] = useState('');
   const [kioskAuthError, setKioskAuthError] = useState('');
+  const [lastSubmittedAttendee, setLastSubmittedAttendee] = useState<Attendee | null>(null);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'TRAINER' | 'PARTICIPANT'>('PARTICIPANT');
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
+  const [tokenCopied, setTokenCopied] = useState(false);
 
-  // Data State initialized from URL params
+  // Core Data
   const [info, setInfo] = useState<TrainingInfo>(() => {
     const defaultDate = new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const defaultPin = Math.floor(1000 + Math.random() * 9000).toString();
     
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      
-      const dataParam = params.get('d');
-      if (dataParam) {
-        const decoded = decodeData(dataParam);
-        if (decoded) {
-            return {
-                activityName: decoded.a || '',
-                instrumentName: decoded.i || '',
-                date: decoded.t || defaultDate,
-                location: decoded.l || '',
-                participantId: decoded.pid || 'peserta',
-                accessCode: decoded.pin || defaultPin,
-            };
-        }
-      }
-
-      const activityName = params.get('activityName');
-      if (activityName) {
-        return {
-            activityName: activityName || '',
-            instrumentName: params.get('instrumentName') || '',
-            date: params.get('date') || defaultDate,
-            location: params.get('location') || '',
-            participantId: params.get('pid') || 'peserta',
-            accessCode: params.get('pin') || defaultPin,
-        };
-      }
+    const params = new URLSearchParams(window.location.search);
+    const dataParam = params.get('d');
+    if (dataParam) {
+      const decoded = decodeInfo(dataParam);
+      if (decoded) return { ...decoded, activityName: decoded.activityName || '', instrumentName: decoded.instrumentName || '', date: decoded.date || defaultDate, location: decoded.location || '', accessCode: decoded.accessCode || defaultPin };
     }
-    
-    return {
-      activityName: '',
-      instrumentName: '',
-      date: defaultDate,
-      location: '',
-      participantId: 'peserta',
-      accessCode: defaultPin,
-    };
+
+    const saved = localStorage.getItem('proline_training_info');
+    return saved ? JSON.parse(saved) : { activityName: '', instrumentName: '', date: defaultDate, location: '', accessCode: defaultPin };
   });
 
-  const [attendees, setAttendees] = useState<Attendee[]>([]);
+  const [attendees, setAttendees] = useState<Attendee[]>(() => {
+    const saved = localStorage.getItem('proline_attendees');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  // Handle URL Data Import (Link dari Peserta)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('token');
+    if (token && isAdminAuthenticated) {
+      const newAttendee = decodeAttendee(token);
+      if (newAttendee && newAttendee.name) {
+        setAttendees(prev => {
+          // Cek duplikat berdasarkan nama dan waktu yang sama
+          const exists = prev.find(a => a.name === newAttendee.name && Math.abs(a.timestamp - (newAttendee.timestamp || 0)) < 1000);
+          if (exists) return prev;
+          
+          const updated = [...prev, newAttendee as Attendee];
+          // Hapus parameter token dari URL setelah import
+          const url = new URL(window.location.href);
+          url.searchParams.delete('token');
+          window.history.replaceState({}, '', url.toString());
+          alert(`Berhasil mengimpor data: ${newAttendee.name}`);
+          return updated;
+        });
+      }
+    }
+  }, [isAdminAuthenticated]);
+
+  useEffect(() => {
+    localStorage.setItem('proline_attendees', JSON.stringify(attendees));
+  }, [attendees]);
+
+  useEffect(() => {
+    localStorage.setItem('proline_training_info', JSON.stringify(info));
+  }, [info]);
 
   const trainers = attendees.filter((a) => a.type === 'TRAINER');
   const participants = attendees.filter((a) => a.type === 'PARTICIPANT');
 
   const getShareLink = () => {
-    if (typeof window === 'undefined') return '';
-    const url = new URL(window.location.href);
-    url.search = ''; 
-    const payload = {
-        a: info.activityName,
-        i: info.instrumentName,
-        t: info.date,
-        l: info.location,
-        pid: info.participantId,
-        pin: info.accessCode
-    };
-    const encoded = encodeData(payload);
+    const url = new URL(window.location.origin + window.location.pathname);
     url.searchParams.set('mode', 'kiosk');
-    if (encoded) {
-        url.searchParams.set('d', encoded);
-    }
+    url.searchParams.set('d', encodeInfo(info));
+    return url.toString();
+  };
+
+  const getTokenLink = (attendee: Attendee) => {
+    const url = new URL(window.location.origin + window.location.pathname);
+    url.searchParams.set('token', encodeAttendee(attendee));
     return url.toString();
   };
 
   const handleAdminLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (adminLoginId === 'ProlineTS' && adminLoginPass === 'Prolinets123') {
+    if (adminLoginId.trim() === 'ProlineTS' && adminLoginPass === 'Prolinets123') {
       setIsAdminAuthenticated(true);
       sessionStorage.setItem('admin_auth_token', 'valid');
       setAdminAuthError('');
-      setAdminLoginId('');
-      setAdminLoginPass('');
     } else {
-      setAdminAuthError('ID atau Password salah.');
+      setAdminAuthError('ID Admin atau Password salah.');
     }
-  };
-
-  const handleAdminLogout = () => {
-    setIsAdminAuthenticated(false);
-    sessionStorage.removeItem('admin_auth_token');
-    setViewMode('ADMIN');
   };
 
   const handleKioskLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (kioskLoginPin === info.accessCode) {
+    if (kioskLoginPin.trim() === info.accessCode?.trim()) {
       setIsKioskAuthenticated(true);
       setKioskAuthError('');
     } else {
-      setKioskAuthError('PIN Akses salah. Silakan tanya Trainer Anda.');
+      setKioskAuthError('PIN Akses salah.');
     }
   };
 
   const handleCopyLink = () => {
     const link = getShareLink();
-    if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(link).then(() => {
-            setCopySuccess(true);
-            setTimeout(() => setCopySuccess(false), 2000);
-        }).catch(() => fallbackCopy(link));
-    } else {
-        fallbackCopy(link);
-    }
-  };
-
-  const fallbackCopy = (text: string) => {
-    try {
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        textArea.style.position = "fixed";
-        textArea.style.left = "-9999px";
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-        setCopySuccess(true);
-        setTimeout(() => setCopySuccess(false), 2000);
-    } catch (err) {
-        console.error('Copy failed', err);
-        alert('Gagal menyalin link. Silakan salin manual.');
-    }
-  };
-
-  const handleInfoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setInfo((prev) => ({ ...prev, [name]: value }));
-  };
-
-  const openSignatureModal = (type: 'TRAINER' | 'PARTICIPANT') => {
-    setModalType(type);
-    setIsModalOpen(true);
+    navigator.clipboard.writeText(link).then(() => {
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    });
   };
 
   const handleSaveSignature = (data: SignatureData) => {
@@ -217,457 +186,265 @@ function App() {
       type: modalType,
       timestamp: Date.now(),
     };
-    setAttendees((prev) => [...prev, newAttendee]);
-    
-    if (viewMode === 'KIOSK') {
-      alert('Terima kasih! Absensi Anda telah tersimpan.');
-    }
-  };
-
-  const handleDeleteAttendee = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!id) return;
-    if (window.confirm('Apakah Anda yakin ingin menghapus data ini?')) {
-      setAttendees((prev) => prev.filter((a) => a.id !== id));
-    }
+    setAttendees(prev => [...prev, newAttendee]);
+    if (viewMode === 'KIOSK') setLastSubmittedAttendee(newAttendee);
   };
 
   const downloadPDF = async () => {
-    if (!info.activityName) {
-      alert('Mohon isi Nama Kegiatan terlebih dahulu.');
-      return;
-    }
+    setIsGeneratingPdf(true);
     try {
-      setIsGeneratingPdf(true);
       await generateAttendancePDF(info, attendees);
-    } catch (error: any) {
-      console.error('Failed to generate PDF', error);
-      alert(`Gagal membuat PDF: ${error.message || 'Unknown error'}`);
+    } catch (error) {
+      alert("Gagal membuat PDF.");
     } finally {
       setIsGeneratingPdf(false);
     }
   };
 
   const renderHeader = () => (
-    <div className="bg-white border-b border-slate-200 sticky top-0 z-30">
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+    <div className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+      <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
         <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-                <img 
-                  src="https://blogger.googleusercontent.com/img/a/AVvXsEgja23NlnFP6xSUoDvW48Iopqrz2WlhHK2Kufki0WdjBoQYfyyP3xSQ90L_b79uMf-w2iPwo1YOUf1KBBhh55bmWycYOIEGoij1qVVEu2tne8jtxoKzfNlULQpPwF1N5hY2cn1eJREpuU1R0TeNTdpP21OzP7ye-Zdd5n4X6HHcLpkUs7dDHA3yxWgSUDgq"
-                  alt="Proline Logo"
-                  className="h-10 w-auto object-contain"
-                />
-            </div>
-          <div className="h-6 w-px bg-slate-300 mx-2 hidden sm:block"></div>
-          <span className="text-sm text-slate-500 font-medium hidden sm:block">Attendance System</span>
+          <img src="https://blogger.googleusercontent.com/img/a/AVvXsEgja23NlnFP6xSUoDvW48Iopqrz2WlhHK2Kufki0WdjBoQYfyyP3xSQ90L_b79uMf-w2iPwo1YOUf1KBBhh55bmWycYOIEGoij1qVVEu2tne8jtxoKzfNlULQpPwF1N5hY2cn1eJREpuU1R0TeNTdpP21OzP7ye-Zdd5n4X6HHcLpkUs7dDHA3yxWgSUDgq" alt="Logo" className="h-8" />
+          <span className="text-xs font-bold text-slate-400 tracking-widest uppercase hidden sm:block">Proline Attendance</span>
         </div>
-
         <div className="flex items-center gap-2">
-          {viewMode === 'ADMIN' ? (
-            isAdminAuthenticated ? (
-              <>
-                 <button 
-                  onClick={handleCopyLink}
-                  className={`px-3 py-2 rounded-lg border transition-all flex items-center gap-2 text-sm font-medium ${
-                      copySuccess 
-                      ? 'bg-green-50 border-green-200 text-green-600' 
-                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}
-                  title="Salin Link untuk Peserta"
-                >
-                  {copySuccess ? <Check size={18} /> : <LinkIcon size={18} />}
-                  <span className="hidden sm:inline">{copySuccess ? 'Disalin!' : 'Salin Link'}</span>
+          {viewMode === 'ADMIN' && isAdminAuthenticated && (
+            <div className="flex gap-2">
+                <button onClick={handleCopyLink} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm transition-all ${copySuccess ? 'bg-green-50 border-green-200 text-green-600' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
+                    {copySuccess ? <Check size={16}/> : <Share2 size={16}/>}
+                    <span className="hidden md:inline">{copySuccess ? 'Link Peserta Disalin' : 'Bagikan Form'}</span>
                 </button>
-                <button 
-                  onClick={() => setViewMode('KIOSK')}
-                  className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-2"
-                  title="Mode Kiosk/Peserta"
-                >
-                  <Share2 size={20} />
-                  <span className="hidden sm:inline text-sm font-medium">Mode Peserta</span>
-                </button>
-                <button 
-                  onClick={downloadPDF}
-                  disabled={isGeneratingPdf}
-                  className="px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-all flex items-center gap-2 text-sm font-medium shadow-lg shadow-slate-900/20 disabled:opacity-70 disabled:cursor-wait"
-                >
-                  <FileDown size={18} />
-                  {isGeneratingPdf ? 'Memproses...' : 'Download PDF'}
-                </button>
-                <div className="w-px h-8 bg-slate-200 mx-2"></div>
-                <button 
-                  onClick={handleAdminLogout}
-                  className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-2"
-                  title="Keluar"
-                >
-                  <LogOut size={20} />
-                </button>
-              </>
-            ) : null
-          ) : (
-            <button 
-              onClick={() => {
-                if (window.history.pushState) {
-                    const url = new URL(window.location.href);
-                    url.search = '';
-                    window.history.pushState({}, '', url.toString());
-                }
-                setViewMode('ADMIN');
-                setAttendees([]);
-                setIsKioskAuthenticated(false);
-              }}
-              className="px-3 py-1.5 text-slate-600 border border-slate-300 rounded-md hover:bg-slate-50 text-xs font-medium flex items-center gap-1"
-            >
-              <ArrowLeft size={14} /> Kembali ke Admin
-            </button>
+                <button onClick={() => { setIsAdminAuthenticated(false); sessionStorage.removeItem('admin_auth_token'); }} className="p-2 text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>
+            </div>
+          )}
+          {viewMode === 'KIOSK' && (
+             <button onClick={() => { setViewMode('ADMIN'); setIsKioskAuthenticated(false); }} className="text-xs text-slate-500 hover:text-slate-800 flex items-center gap-1 font-semibold">
+                <ArrowLeft size={14}/> Dashboard Admin
+             </button>
           )}
         </div>
       </div>
     </div>
   );
 
-  const renderAdminLogin = () => (
-    <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center p-6 bg-slate-50">
-      <div className="max-w-sm w-full bg-white rounded-2xl shadow-xl p-8 animate-in fade-in zoom-in duration-300">
-        <div className="text-center mb-6">
-          <div className="bg-blue-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-            <Lock className="text-blue-600" size={32} />
-          </div>
-          <h2 className="text-2xl font-bold text-slate-900">Admin Login</h2>
-          <p className="text-sm text-slate-500 mt-1">Gunakan kredensial Proline untuk masuk</p>
+  const renderKioskSuccess = () => {
+    const tokenLink = lastSubmittedAttendee ? getTokenLink(lastSubmittedAttendee) : "";
+    
+    return (
+      <div className="max-w-md mx-auto mt-10 p-8 bg-white rounded-3xl shadow-2xl text-center space-y-6 animate-in zoom-in duration-300">
+        <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center text-green-600 mx-auto border-4 border-green-50">
+            <CheckCircle2 size={48} />
+        </div>
+        <div>
+          <h2 className="text-2xl font-bold text-slate-900">Tanda Tangan Berhasil!</h2>
+          <p className="text-slate-500 mt-2">Terima kasih <b>{lastSubmittedAttendee?.name}</b>, kehadiran Anda telah dicatat.</p>
         </div>
 
-        <form onSubmit={handleAdminLogin} className="space-y-4">
-          {adminAuthError && (
-            <div className="p-3 bg-red-50 text-red-600 text-xs rounded-lg border border-red-100 text-center">
-              {adminAuthError}
-            </div>
-          )}
-          
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">ID Admin</label>
-            <input
-              type="text"
-              value={adminLoginId}
-              onChange={(e) => setAdminLoginId(e.target.value)}
-              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-              placeholder="Masukkan ID"
-              autoFocus
-            />
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Kata Sandi</label>
-            <input
-              type="password"
-              value={adminLoginPass}
-              onChange={(e) => setAdminLoginPass(e.target.value)}
-              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-              placeholder="Masukkan Password"
-            />
-          </div>
-
-          <button
-            type="submit"
-            className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-semibold shadow-lg shadow-slate-900/20 transition-all active:scale-95"
+        <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100 space-y-3">
+          <p className="text-xs text-blue-600 font-bold uppercase">Langkah Terakhir (Jika HP Pribadi)</p>
+          <p className="text-[11px] text-blue-500 leading-tight">Klik tombol di bawah untuk menyalin link data Anda, lalu kirimkan ke WhatsApp Trainer agar masuk ke daftar utama.</p>
+          <button 
+            onClick={() => {
+              navigator.clipboard.writeText(tokenLink);
+              setTokenCopied(true);
+              setTimeout(() => setTokenCopied(false), 3000);
+            }}
+            className={`w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${tokenCopied ? 'bg-green-600 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
           >
-            Masuk
-          </button>
-        </form>
-
-        <div className="pt-6 border-t border-slate-100 mt-6">
-          <button
-            type="button"
-            onClick={() => setViewMode('KIOSK')}
-            className="w-full py-2.5 px-4 border border-blue-200 text-blue-600 rounded-lg text-sm font-semibold hover:bg-blue-50 transition-all flex items-center justify-center gap-2 shadow-sm"
-          >
-            <Users size={18} />
-            Masuk Mode Peserta
+            {tokenCopied ? <><ClipboardCheck size={20}/> Link Data Disalin!</> : <><Send size={18}/> Kirim Data ke Trainer</>}
           </button>
         </div>
+
+        <button onClick={() => setLastSubmittedAttendee(null)} className="w-full py-3 bg-slate-100 text-slate-700 rounded-xl font-bold hover:bg-slate-200">
+            Isi untuk Orang Lain
+        </button>
       </div>
-    </div>
-  );
+    );
+  };
 
-  const renderKioskLogin = () => (
-    <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center p-6 bg-slate-50">
-      <div className="max-w-sm w-full bg-white rounded-2xl shadow-xl p-8 animate-in fade-in zoom-in duration-300">
-        <div className="text-center mb-6">
-           <img 
-              src="https://blogger.googleusercontent.com/img/a/AVvXsEgja23NlnFP6xSUoDvW48Iopqrz2WlhHK2Kufki0WdjBoQYfyyP3xSQ90L_b79uMf-w2iPwo1YOUf1KBBhh55bmWycYOIEGoij1qVVEu2tne8jtxoKzfNlULQpPwF1N5hY2cn1eJREpuU1R0TeNTdpP21OzP7ye-Zdd5n4X6HHcLpkUs7dDHA3yxWgSUDgq"
-              alt="Proline"
-              className="h-12 w-auto object-contain mx-auto mb-4"
-            />
-          <h2 className="text-xl font-bold text-slate-900">Login Peserta</h2>
-          <p className="text-sm text-slate-500 mt-1">Masukkan PIN dari Trainer untuk mengisi absen</p>
-        </div>
-
-        <form onSubmit={handleKioskLogin} className="space-y-4">
-          {kioskAuthError && (
-            <div className="p-3 bg-red-50 text-red-600 text-xs rounded-lg border border-red-100 text-center">
-              {kioskAuthError}
+  const renderKioskMode = () => {
+    if (lastSubmittedAttendee) return renderKioskSuccess();
+    if (!isKioskAuthenticated) {
+      return (
+        <div className="min-h-[calc(100vh-64px)] flex items-center justify-center p-6 bg-slate-50">
+          <div className="max-w-sm w-full bg-white rounded-3xl shadow-2xl p-8 border border-slate-100 animate-in fade-in zoom-in">
+            <div className="text-center mb-8">
+              <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600">
+                <KeyRound size={32} />
+              </div>
+              <h2 className="text-xl font-bold text-slate-900">Akses Peserta</h2>
+              <p className="text-sm text-slate-500 mt-1">Masukkan PIN yang diberikan oleh Admin/Trainer</p>
             </div>
-          )}
-          
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">PIN Akses</label>
-            <div className="relative">
-              <KeyRound className="absolute left-3 top-2.5 text-slate-400" size={18} />
+            <form onSubmit={handleKioskLogin} className="space-y-6">
+              {kioskAuthError && <div className="p-3 bg-red-50 text-red-600 text-xs rounded-xl text-center border border-red-100 font-medium">{kioskAuthError}</div>}
               <input
                 type="tel"
                 value={kioskLoginPin}
                 onChange={(e) => setKioskLoginPin(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono text-center text-lg tracking-widest"
-                placeholder="PIN"
+                className="w-full px-4 py-4 border-2 border-slate-100 rounded-2xl text-center text-3xl font-mono tracking-[0.5em] focus:border-blue-500 focus:ring-0 outline-none transition-all"
+                placeholder="0000"
                 maxLength={6}
                 autoFocus
               />
-            </div>
+              <button type="submit" className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold text-lg shadow-xl shadow-blue-600/20 active:scale-95 transition-all">
+                Buka Form Absen
+              </button>
+            </form>
           </div>
+        </div>
+      );
+    }
 
-          <button
-            type="submit"
-            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold shadow-lg shadow-blue-600/20 transition-all active:scale-95"
+    return (
+      <div className="max-w-md mx-auto mt-10 p-8 bg-white rounded-3xl shadow-2xl space-y-8 animate-in slide-in-from-bottom-4">
+          <div className="text-center">
+              <h2 className="text-2xl font-bold text-slate-900">Daftar Hadir Training</h2>
+              <div className="mt-6 p-5 bg-slate-50 rounded-2xl text-left border border-slate-100">
+                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Topik Kegiatan</p>
+                  <p className="text-lg font-bold text-slate-900 leading-tight">{info.activityName || 'Sesi Training Proline'}</p>
+                  <div className="flex items-center gap-2 mt-3 text-slate-500 text-xs">
+                    <User size={14} /> <span>{info.instrumentName || 'Umum'}</span>
+                    <span className="mx-1">•</span>
+                    <span>{info.date}</span>
+                  </div>
+              </div>
+          </div>
+          <button 
+            onClick={() => { setModalType('PARTICIPANT'); setIsModalOpen(true); }} 
+            className="w-full py-6 bg-slate-900 text-white rounded-3xl font-bold text-xl shadow-2xl shadow-slate-900/20 active:scale-95 transition-all flex flex-col items-center justify-center gap-1"
           >
-            Buka Form Absen
+              <span>Mulai Tanda Tangan</span>
+              <span className="text-[10px] opacity-60 font-normal uppercase tracking-widest">Digital Signature</span>
           </button>
-        </form>
+          <div className="flex items-center gap-2 justify-center text-slate-400 text-[10px] uppercase font-bold tracking-widest">
+            <Lock size={12}/> Secure Data System
+          </div>
       </div>
-    </div>
-  );
+    );
+  };
 
-  const renderKioskMode = () => (
-    <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center p-6 bg-slate-50">
-      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center space-y-6 animate-in fade-in zoom-in duration-300">
-        <div className="w-full flex justify-center mb-4">
-             <img 
-                  src="https://blogger.googleusercontent.com/img/a/AVvXsEgja23NlnFP6xSUoDvW48Iopqrz2WlhHK2Kufki0WdjBoQYfyyP3xSQ90L_b79uMf-w2iPwo1YOUf1KBBhh55bmWycYOIEGoij1qVVEu2tne8jtxoKzfNlULQpPwF1N5hY2cn1eJREpuU1R0TeNTdpP21OzP7ye-Zdd5n4X6HHcLpkUs7dDHA3yxWgSUDgq"
-                  alt="Proline Logo"
-                  className="h-16 w-auto object-contain"
-                />
-        </div>
-        
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900 mb-2">Presensi Kehadiran</h2>
-          <p className="text-slate-500">Silakan isi data diri dan tanda tangan digital.</p>
-        </div>
-
-        <div className="bg-slate-50 p-4 rounded-xl text-left space-y-3 border border-slate-100">
-           <div className="flex justify-between items-center border-b border-slate-200 pb-2">
-              <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Kegiatan</span>
-              <span className="text-sm font-bold text-slate-900 text-right max-w-[60%] truncate">
-                {info.activityName || <span className="text-slate-400 italic">Belum diisi</span>}
-              </span>
-           </div>
-           <div className="flex justify-between items-center">
-              <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Tanggal</span>
-              <span className="text-sm font-medium text-slate-900 text-right">{info.date || '-'}</span>
-           </div>
-        </div>
-
-        <button
-          onClick={() => openSignatureModal('PARTICIPANT')}
-          className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-lg shadow-lg shadow-blue-600/30 transition-all active:scale-95 flex justify-center items-center gap-2"
-        >
-          Isi Daftar Hadir
-        </button>
-        
-        <p className="text-xs text-slate-400 mt-8">Proline Attendance System &copy; 2024</p>
-      </div>
-    </div>
-  );
-
-  const renderAdminMode = () => (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 animate-in fade-in slide-in-from-bottom-4">
-      
-      <section className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex justify-between items-center">
-          <h2 className="text-lg font-semibold text-slate-800">Informasi Training & Keamanan</h2>
-        </div>
-        <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Nama Kegiatan</label>
-            <input
-              type="text"
-              name="activityName"
-              value={info.activityName}
-              onChange={handleInfoChange}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Nama Instrumen</label>
-            <input
-              type="text"
-              name="instrumentName"
-              value={info.instrumentName}
-              onChange={handleInfoChange}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Hari, Tanggal</label>
-            <input
-              type="text"
-              name="date"
-              value={info.date}
-              onChange={handleInfoChange}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Lokasi</label>
-            <input
-              type="text"
-              name="location"
-              value={info.location}
-              onChange={handleInfoChange}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-            />
-          </div>
-          
-          <div className="md:col-span-2 border-t pt-4 mt-2">
-            <h3 className="text-sm font-semibold text-slate-900 mb-3 flex items-center gap-2">
-                <Lock size={16} className="text-slate-500"/> Keamanan Akses Peserta
-            </h3>
-            <div className="max-w-xs">
-                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1">PIN Akses</label>
-                <div className="relative">
-                    <KeyRound className="absolute left-3 top-2.5 text-slate-400" size={18} />
-                    <input
-                        type="text"
-                        name="accessCode"
-                        value={info.accessCode || ''}
-                        onChange={handleInfoChange}
-                        className="w-full pl-10 pr-4 py-2 border border-slate-300 bg-slate-50 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono text-slate-700 text-center text-lg tracking-widest"
-                        maxLength={6}
-                    />
-                </div>
-                <p className="text-xs text-slate-400 mt-1">Gunakan tombol "Salin Link" di atas untuk membagikan akses ke peserta.</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <section className="lg:col-span-1 space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold text-slate-800">Trainers</h3>
-                <button
-                    onClick={() => openSignatureModal('TRAINER')}
-                    className="text-sm flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium"
-                >
-                    <PlusCircle size={16} /> Tambah
-                </button>
+  const renderAdminDashboard = () => (
+    <div className="max-w-5xl mx-auto p-6 space-y-8 animate-in fade-in duration-500">
+        <section className="bg-white rounded-3xl shadow-xl border border-slate-100 p-8 overflow-hidden relative">
+            <div className="absolute top-0 right-0 p-4">
+              <div className="bg-amber-50 text-amber-600 px-4 py-2 rounded-2xl text-xs font-bold border border-amber-100 flex items-center gap-2">
+                 <KeyRound size={14}/> PIN AKSES: {info.accessCode}
+              </div>
             </div>
             
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                {trainers.length === 0 ? (
-                    <div className="p-8 text-center text-slate-400 text-sm">Belum ada trainer</div>
-                ) : (
-                    <ul className="divide-y divide-slate-100">
-                        {trainers.map((t) => (
-                            <li key={t.id} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
-                                <div className="flex-1 mr-2">
-                                    <div className="font-medium text-slate-900">{t.name}</div>
-                                    <div className="text-xs text-slate-500">{t.role}</div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <img src={t.signature} alt="sig" className="h-8 w-auto border border-slate-100 bg-white rounded" />
-                                    <button
-                                        type="button"
-                                        onClick={(e) => handleDeleteAttendee(e, t.id)}
-                                        className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
-                                    >
-                                        <Trash2 size={16} />
-                                    </button>
-                                </div>
-                            </li>
-                        ))}
-                    </ul>
-                )}
+            <h2 className="text-2xl font-bold text-slate-900 mb-8">Dashboard Admin</h2>
+            
+            <div className="grid md:grid-cols-2 gap-6">
+                <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Nama Kegiatan</label>
+                    <input name="activityName" value={info.activityName} onChange={(e) => setInfo({...info, activityName: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 font-medium" placeholder="Contoh: Training ISO 9001" />
+                </div>
+                <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Ubah PIN Akses</label>
+                    <input name="accessCode" value={info.accessCode} onChange={(e) => setInfo({...info, accessCode: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl font-mono tracking-widest text-center" />
+                </div>
+            </div>
+
+            <div className="mt-8 p-5 bg-blue-50/50 rounded-2xl flex gap-4 border border-blue-100/50">
+                <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 shrink-0">
+                  <Info size={20} />
+                </div>
+                <div>
+                  <p className="text-xs text-blue-700 font-semibold mb-1">Tips Koneksi Perangkat:</p>
+                  <p className="text-[11px] text-blue-600 leading-relaxed">
+                    Data tersimpan di <b>Browser Ini</b>. Jika peserta mengisi dari HP masing-masing, minta mereka klik <b>"Kirim Data ke Trainer"</b> setelah tanda tangan, lalu klik link yang mereka kirimkan untuk memasukkan data mereka ke daftar ini secara otomatis.
+                  </p>
+                </div>
             </div>
         </section>
 
-        <section className="lg:col-span-2 space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold text-slate-800">Peserta ({participants.length})</h3>
-                <button
-                    onClick={() => openSignatureModal('PARTICIPANT')}
-                    className="text-sm flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium"
-                >
-                    <PlusCircle size={16} /> Tambah
-                </button>
+        <div className="grid lg:grid-cols-3 gap-8">
+            <div className="lg:col-span-1 space-y-6">
+                <div className="flex justify-between items-center px-2">
+                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><Users size={18} className="text-blue-500"/> Trainers</h3>
+                    <button onClick={() => { setModalType('TRAINER'); setIsModalOpen(true); }} className="text-blue-600 text-xs font-bold hover:underline">+ Tambah</button>
+                </div>
+                <div className="bg-white border border-slate-100 rounded-3xl divide-y overflow-hidden shadow-sm">
+                    {trainers.length === 0 ? <p className="p-8 text-center text-slate-400 text-sm italic">Belum ada trainer</p> : trainers.map(t => (
+                        <div key={t.id} className="p-5 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                            <div><p className="font-bold text-slate-900 text-sm">{t.name}</p><p className="text-[11px] text-slate-400">{t.role}</p></div>
+                            <div className="flex items-center gap-3">
+                                <img src={t.signature} className="h-8 border rounded bg-white p-0.5" alt="sig"/>
+                                <button onClick={() => setAttendees(attendees.filter(a => a.id !== t.id))} className="text-red-200 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                <div className="overflow-x-auto">
+            <div className="lg:col-span-2 space-y-6">
+                <div className="flex justify-between items-center px-2">
+                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><Users size={18} className="text-green-500"/> Peserta ({participants.length})</h3>
+                    <button onClick={downloadPDF} disabled={isGeneratingPdf} className="bg-slate-900 text-white px-5 py-2 rounded-2xl text-xs font-bold flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/10">
+                        {isGeneratingPdf ? <RotateCcw size={14} className="animate-spin"/> : <FileDown size={14}/>}
+                        {isGeneratingPdf ? 'Memproses...' : 'Download PDF'}
+                    </button>
+                </div>
+                <div className="bg-white border border-slate-100 rounded-3xl overflow-hidden shadow-sm">
                     <table className="w-full text-sm text-left">
-                        <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
+                        <thead className="bg-slate-50/50 border-b border-slate-100">
                             <tr>
-                                <th className="px-6 py-3 w-12 text-center">No</th>
-                                <th className="px-6 py-3">Nama</th>
-                                <th className="px-6 py-3">Jabatan / Instansi</th>
-                                <th className="px-6 py-3 text-right">Tanda Tangan</th>
-                                <th className="px-6 py-3 w-16 text-center">Aksi</th>
+                                <th className="px-6 py-4 text-[10px] text-slate-400 uppercase tracking-widest">Nama Peserta</th>
+                                <th className="px-6 py-4 text-[10px] text-slate-400 uppercase tracking-widest">Jabatan / Instansi</th>
+                                <th className="px-6 py-4 text-right text-[10px] text-slate-400 uppercase tracking-widest">Aksi</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100">
+                        <tbody className="divide-y divide-slate-50">
                             {participants.length === 0 ? (
-                                <tr>
-                                    <td colSpan={5} className="px-6 py-12 text-center text-slate-400">
-                                        Belum ada peserta yang mengisi daftar hadir.
+                              <tr><td colSpan={3} className="px-6 py-16 text-center text-slate-400 italic">Belum ada peserta yang mengisi daftar hadir.</td></tr>
+                            ) : (
+                              participants.map(p => (
+                                <tr key={p.id} className="hover:bg-slate-50/50 transition-colors group">
+                                    <td className="px-6 py-4 font-semibold text-slate-900">{p.name}</td>
+                                    <td className="px-6 py-4 text-slate-500">{p.role}</td>
+                                    <td className="px-6 py-4 text-right">
+                                      <div className="flex justify-end items-center gap-4">
+                                        <img src={p.signature} className="h-8 border rounded bg-white p-0.5 opacity-60 group-hover:opacity-100" alt="sig"/>
+                                        <button onClick={() => setAttendees(attendees.filter(a => a.id !== p.id))} className="text-slate-200 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
+                                      </div>
                                     </td>
                                 </tr>
-                            ) : (
-                                participants.map((p, idx) => (
-                                    <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
-                                        <td className="px-6 py-4 text-center text-slate-500">{idx + 1}</td>
-                                        <td className="px-6 py-4 font-medium text-slate-900">{p.name}</td>
-                                        <td className="px-6 py-4 text-slate-600">{p.role}</td>
-                                        <td className="px-6 py-4 flex justify-end">
-                                            <img src={p.signature} alt="sig" className="h-8 w-auto border border-slate-100 bg-slate-50 rounded" />
-                                        </td>
-                                        <td className="px-6 py-4 text-center">
-                                            <button
-                                                type="button"
-                                                onClick={(e) => handleDeleteAttendee(e, p.id)}
-                                                className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
-                                            >
-                                                <Trash2 size={16} />
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))
+                              ))
                             )}
                         </tbody>
                     </table>
                 </div>
             </div>
-        </section>
-      </div>
+        </div>
     </div>
   );
 
   return (
-    <div className="min-h-screen font-sans">
+    <div className="min-h-screen bg-[#FDFDFD] pb-20">
       {renderHeader()}
       <main>
-        {viewMode === 'KIOSK' ? (
-             isKioskAuthenticated ? renderKioskMode() : renderKioskLogin()
-        ) : (
-          !isAdminAuthenticated ? renderAdminLogin() : renderAdminMode()
+        {viewMode === 'KIOSK' ? renderKioskMode() : (
+          !isAdminAuthenticated ? (
+            <div className="min-h-[calc(100vh-64px)] flex items-center justify-center p-6 bg-slate-50">
+              <div className="max-w-sm w-full bg-white rounded-3xl shadow-2xl p-8 border border-slate-100">
+                <div className="text-center mb-8">
+                  <img src="https://blogger.googleusercontent.com/img/a/AVvXsEgja23NlnFP6xSUoDvW48Iopqrz2WlhHK2Kufki0WdjBoQYfyyP3xSQ90L_b79uMf-w2iPwo1YOUf1KBBhh55bmWycYOIEGoij1qVVEu2tne8jtxoKzfNlULQpPwF1N5hY2cn1eJREpuU1R0TeNTdpP21OzP7ye-Zdd5n4X6HHcLpkUs7dDHA3yxWgSUDgq" alt="Proline" className="h-10 mx-auto mb-4" />
+                  <h2 className="text-2xl font-bold text-slate-900">Admin Login</h2>
+                </div>
+                <form onSubmit={handleAdminLogin} className="space-y-4">
+                  {adminAuthError && <div className="p-3 bg-red-50 text-red-600 text-xs rounded-xl text-center font-medium">{adminAuthError}</div>}
+                  <input type="text" placeholder="ID Admin" value={adminLoginId} onChange={(e) => setAdminLoginId(e.target.value)} className="w-full px-5 py-3 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-slate-900" />
+                  <input type="password" placeholder="Password" value={adminLoginPass} onChange={(e) => setAdminLoginPass(e.target.value)} className="w-full px-5 py-3 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-slate-900" />
+                  <button type="submit" className="w-full py-4 bg-slate-900 text-white rounded-2xl font-bold text-lg shadow-xl shadow-slate-900/20 active:scale-95 transition-all">Masuk</button>
+                </form>
+                <button onClick={() => setViewMode('KIOSK')} className="w-full mt-6 py-2 text-sm text-blue-600 font-bold hover:underline">Masuk Sebagai Peserta</button>
+              </div>
+            </div>
+          ) : renderAdminDashboard()
         )}
       </main>
-      
-      <SignatureModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        onSave={handleSaveSignature}
-        type={modalType}
-      />
+      <SignatureModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleSaveSignature} type={modalType} />
     </div>
   );
 }

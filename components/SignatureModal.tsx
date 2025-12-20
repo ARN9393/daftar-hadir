@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+// @ts-ignore
 import SignatureCanvas from 'react-signature-canvas';
 import { X, Eraser, Check } from 'lucide-react';
 import { SignatureData } from '../types';
@@ -11,7 +12,7 @@ interface Props {
 }
 
 const SignatureModal: React.FC<Props> = ({ isOpen, onClose, onSave, type }) => {
-  const sigCanvas = useRef<SignatureCanvas>(null);
+  const sigCanvas = useRef<any>(null);
   const [name, setName] = useState('');
   const [role, setRole] = useState('');
   const [error, setError] = useState('');
@@ -31,19 +32,17 @@ const SignatureModal: React.FC<Props> = ({ isOpen, onClose, onSave, type }) => {
       setError(type === 'TRAINER' ? 'Jabatan wajib diisi' : 'Instansi/Jabatan wajib diisi');
       return;
     }
-    if (sigCanvas.current?.isEmpty()) {
+    if (!sigCanvas.current || sigCanvas.current.isEmpty()) {
       setError('Tanda tangan wajib diisi');
       return;
     }
 
-    const signatureDataUrl = sigCanvas.current?.getTrimmedCanvas().toDataURL('image/png');
+    const signatureDataUrl = sigCanvas.current.getTrimmedCanvas().toDataURL('image/png');
     
     if (signatureDataUrl) {
       onSave({ name, role, signatureDataUrl });
-      // Reset fields
       setName('');
       setRole('');
-      clear();
       setError('');
       onClose();
     }
